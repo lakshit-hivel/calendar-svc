@@ -424,447 +424,502 @@ POSTGRES_HOST=your_host
 ```
 
 
-### Step 6.8: Create OAuth Handler (THE IMPORTANT PART)
+### Step 6.8: Create OAuth Handler (Functional Style)
 
 ```python
 # app/auth/oauth.py
+"""
+OAuth functions for Google Calendar Marketplace integration.
+Matches existing Hivel functional style.
+"""
 
+import os
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
-from app.config import settings
-import json
 
-class GoogleOAuth:
-    """Handles all OAuth operations for Marketplace app"""
-    
-    def __init__(self):
-        self.client_config = {
-            "web": {
-                "client_id": settings.GOOGLE_CLIENT_ID,
-                "client_secret": settings.GOOGLE_CLIENT_SECRET,
-                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                "token_uri": "https://oauth2.googleapis.com/token",
-                "redirect_uris": [settings.REDIRECT_URI]
-            }
-        }
-    
-    def get_authorization_url(self, org_id: int) -> str:
-        """
-        Generate the URL where admin clicks to start OAuth.
-        Called when client wants to integrate.
-        
-        Args:
-            org_id: Your internal organization ID
-            
-        Returns:
-            URL to redirect admin to
-        """
-        flow = Flow.from_client_config(
-            self.client_config,
-            scopes=settings.SCOPES,
-            redirect_uri=settings.REDIRECT_URI
-        )
-        
-        # state parameter will be returned in callback
-        # Use it to know which org is integrating
-        authorization_url, state = flow.authorization_url(
-            access_type='offline',      # Get refresh token
-            include_granted_scopes='true',
-            prompt='consent',           # Always show consent screen
-            state=str(org_id)           # Pass org_id through OAuth flow
-        )
-        
-        return authorization_url
-    
-    def exchange_code_for_tokens(self, authorization_code: str) -> dict:
-        """
-        Exchange the authorization code for access & refresh tokens.
-        Called when Google redirects back to your callback URL.
-        
-        Args:
-            authorization_code: The code from callback URL
-            
-        Returns:
-            Dictionary with tokens
-        """
-        flow = Flow.from_client_config(
-            self.client_config,
-            scopes=settings.SCOPES,
-            redirect_uri=settings.REDIRECT_URI
-        )
-        
-        # Exchange code for tokens
-        flow.fetch_token(code=authorization_code)
-        credentials = flow.credentials
-        
-        return {
-            "access_token": credentials.token,
-            "refresh_token": credentials.refresh_token,
-            "expiry": credentials.expiry.isoformat() if credentials.expiry else None,
-            "scopes": list(credentials.scopes) if credentials.scopes else []
-        }
-    
-    def refresh_access_token(self, refresh_token: str) -> dict:
-        """
-        Get new access token using refresh token.
-        Called when access token expires.
-        
-        Args:
-            refresh_token: The stored refresh token
-            
-        Returns:
-            New tokens dictionary
-        """
-        credentials = Credentials(
-            token=None,
-            refresh_token=refresh_token,
-            token_uri="https://oauth2.googleapis.com/token",
-            client_id=settings.GOOGLE_CLIENT_ID,
-            client_secret=settings.GOOGLE_CLIENT_SECRET
-        )
-        
-        # Refresh the token
-        credentials.refresh(Request())
-        
-        return {
-            "access_token": credentials.token,
-            "refresh_token": credentials.refresh_token or refresh_token,
-            "expiry": credentials.expiry.isoformat() if credentials.expiry else None
-        }
+# Config (loaded from environment)
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
+REDIRECT_URI = os.getenv("REDIRECT_URI", "http://localhost:8000/auth/callback")
+SCOPES = [
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/userinfo.email"
+]
 
-# Create singleton instance
-google_oauth = GoogleOAuth()
+
+def get_client_config():
+    """Get OAuth client config dict."""
+    return {
+        "web": {
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": [REDIRECT_URI]
+        }
+    }
+
+
+def get_authorization_url(org_id):
+    """
+    Generate the URL where admin clicks to start OAuth.
+    
+    Args:
+        org_id: Your internal organization ID
+        
+    Returns:
+        Authorization URL string
+    """
+    flow = Flow.from_client_config(
+        get_client_config(),
+        scopes=SCOPES,
+        redirect_uri=REDIRECT_URI
+    )
+    
+    authorization_url, state = flow.authorization_url(
+        access_type='offline',
+        include_granted_scopes='true',
+        prompt='consent',
+        state=str(org_id)  # Pass org_id through OAuth flow
+    )
+    
+    print(f"Generated auth URL for org {org_id}")
+    return authorization_url
+
+
+def exchange_code_for_tokens(authorization_code):
+    """
+    Exchange authorization code for tokens.
+    Called when Google redirects back to callback URL.
+    
+    Args:
+        authorization_code: The code from callback URL
+        
+    Returns:
+        Dictionary with access_token, refresh_token, expiry
+    """
+    flow = Flow.from_client_config(
+        get_client_config(),
+        scopes=SCOPES,
+        redirect_uri=REDIRECT_URI
+    )
+    
+    flow.fetch_token(code=authorization_code)
+    credentials = flow.credentials
+    
+    print("Successfully exchanged code for tokens")
+    
+    return {
+        "access_token": credentials.token,
+        "refresh_token": credentials.refresh_token,
+        "expiry": credentials.expiry.isoformat() if credentials.expiry else None
+    }
+
+
+def refresh_access_token(refresh_token):
+    """
+    Get new access token using refresh token.
+    
+    Args:
+        refresh_token: The stored refresh token
+        
+    Returns:
+        Dictionary with new access_token, refresh_token, expiry
+    """
+    credentials = Credentials(
+        token=None,
+        refresh_token=refresh_token,
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=GOOGLE_CLIENT_ID,
+        client_secret=GOOGLE_CLIENT_SECRET
+    )
+    
+    credentials.refresh(Request())
+    
+    print("Successfully refreshed access token")
+    
+    return {
+        "access_token": credentials.token,
+        "refresh_token": credentials.refresh_token or refresh_token,
+        "expiry": credentials.expiry.isoformat() if credentials.expiry else None
+    }
 ```
 
-### Step 6.9: Create Token Manager (Using Existing Table with AES Encryption)
+### Step 6.9: Create Token Manager (Functional Style with AES)
 
 ```python
 # app/auth/token_manager.py
+"""
+Token management functions for Google Calendar integration.
+Uses existing insightly.user_integration_details table with AES encryption.
+Matches existing Hivel functional style from get_db_data.py.
+"""
 
+import psycopg2
 import psycopg2.extras
 from datetime import datetime, timedelta
 from app.database.connection import get_connection
-from app.auth.oauth import google_oauth
+from app.auth import oauth
 
-class TokenManager:
+PROVIDER = 'GOOGLE_CALENDAR'
+
+
+def get_tokens(org_id):
     """
-    Manages storing and retrieving OAuth tokens.
-    Uses existing insightly.user_integration_details table with AES encryption.
+    Get decrypted tokens from database.
+    
+    Args:
+        org_id: Organization ID
+        
+    Returns:
+        Dictionary with token, refresh_token, expires_at or None
     """
-    
-    PROVIDER = 'GOOGLE_CALENDAR'
-    
-    def get_tokens(self, org_id: int) -> dict:
-        """
-        Get decrypted tokens from database.
-        
-        Args:
-            org_id: Organization ID
+    conn = get_connection()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
+            cursor.execute("""
+                SELECT 
+                    aes_decrypt(uid.accesstoken) as token, 
+                    aes_decrypt(uid.refreshtoken) as refresh_token, 
+                    COALESCE(
+                        uid.access_token_generation_date + 
+                        CAST(uid.expiresin || ' minutes' AS INTERVAL), 
+                        NOW()
+                    ) as expires_at 
+                FROM insightly.user_integration_details uid 
+                WHERE uid.organizationid = %s 
+                AND provider = %s
+            """, (org_id, PROVIDER))
             
-        Returns:
-            Dictionary with token, refresh_token, expires_at
-        """
-        conn = get_connection()
-        try:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
-                cursor.execute("""
-                    SELECT 
-                        aes_decrypt(uid.accesstoken) as token, 
-                        aes_decrypt(uid.refreshtoken) as refresh_token, 
-                        COALESCE(
-                            uid.access_token_generation_date + 
-                            CAST(uid.expiresin || ' minutes' AS INTERVAL), 
-                            NOW()
-                        ) as expires_at 
-                    FROM insightly.user_integration_details uid 
-                    WHERE uid.organizationid = %s 
-                    AND provider = %s
-                """, (org_id, self.PROVIDER))
-                
-                result = cursor.fetchone()
-                if result:
-                    return dict(result)
-                return None
-        finally:
-            conn.close()
+            result = cursor.fetchone()
+            if result:
+                return dict(result)
+            return None
+    finally:
+        conn.close()
+
+
+def save_tokens(org_id, tokens):
+    """
+    Save tokens with AES encryption.
     
-    def save_tokens(self, org_id: int, tokens: dict) -> bool:
-        """
-        Save tokens with AES encryption.
+    Args:
+        org_id: Organization ID
+        tokens: Dictionary with access_token, refresh_token
         
-        Args:
-            org_id: Organization ID
-            tokens: Dictionary with access_token, refresh_token
+    Returns:
+        True if successful
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cursor:
+            # Check if record exists
+            cursor.execute("""
+                SELECT id FROM insightly.user_integration_details 
+                WHERE organizationid = %s AND provider = %s
+            """, (org_id, PROVIDER))
             
-        Returns:
-            True if successful
-        """
-        conn = get_connection()
-        try:
-            with conn.cursor() as cursor:
-                # Check if record exists
+            existing = cursor.fetchone()
+            
+            if existing:
+                # Update existing record
                 cursor.execute("""
-                    SELECT id FROM insightly.user_integration_details 
+                    UPDATE insightly.user_integration_details
+                    SET accesstoken = aes_encrypt(%s), 
+                        refreshtoken = aes_encrypt(%s),
+                        access_token_generation_date = NOW(),
+                        expiresin = 60
                     WHERE organizationid = %s AND provider = %s
-                """, (org_id, self.PROVIDER))
-                
-                existing = cursor.fetchone()
-                
-                if existing:
-                    # Update existing record
-                    cursor.execute("""
-                        UPDATE insightly.user_integration_details
-                        SET accesstoken = aes_encrypt(%s), 
-                            refreshtoken = aes_encrypt(%s),
-                            access_token_generation_date = NOW(),
-                            expiresin = 60
-                        WHERE organizationid = %s AND provider = %s
-                    """, (
-                        tokens.get("access_token"),
-                        tokens.get("refresh_token"),
-                        org_id,
-                        self.PROVIDER
-                    ))
-                else:
-                    # Insert new record
-                    cursor.execute("""
-                        INSERT INTO insightly.user_integration_details 
-                        (organizationid, provider, accesstoken, refreshtoken, 
-                         access_token_generation_date, expiresin)
-                        VALUES (%s, %s, aes_encrypt(%s), aes_encrypt(%s), NOW(), 60)
-                    """, (
-                        org_id,
-                        self.PROVIDER,
-                        tokens.get("access_token"),
-                        tokens.get("refresh_token")
-                    ))
-                
-                conn.commit()
-                return True
-        except Exception as e:
-            conn.rollback()
-            raise e
-        finally:
-            conn.close()
+                """, (
+                    tokens.get("access_token"),
+                    tokens.get("refresh_token"),
+                    org_id,
+                    PROVIDER
+                ))
+            else:
+                # Insert new record
+                cursor.execute("""
+                    INSERT INTO insightly.user_integration_details 
+                    (organizationid, provider, accesstoken, refreshtoken, 
+                     access_token_generation_date, expiresin)
+                    VALUES (%s, %s, aes_encrypt(%s), aes_encrypt(%s), NOW(), 60)
+                """, (
+                    org_id,
+                    PROVIDER,
+                    tokens.get("access_token"),
+                    tokens.get("refresh_token")
+                ))
+            
+            conn.commit()
+            print(f"Saved tokens for org {org_id}")
+            return True
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        conn.close()
+
+
+def get_valid_token(org_id):
+    """
+    Get a valid access token, refreshing if needed.
     
-    def get_valid_token(self, org_id: int) -> str:
-        """
-        Get a valid access token, refreshing if needed.
+    Args:
+        org_id: Organization ID
         
-        Args:
-            org_id: Organization ID
-            
-        Returns:
-            Valid access token string
-        """
-        tokens = self.get_tokens(org_id)
+    Returns:
+        Valid access token string
+    """
+    tokens = get_tokens(org_id)
+    
+    if not tokens:
+        raise Exception(f"No tokens found for organization {org_id}")
+    
+    # Check if token is expired (with 5 min buffer)
+    expires_at = tokens.get("expires_at")
+    if expires_at and expires_at < datetime.now() + timedelta(minutes=5):
+        # Token expired, refresh it
+        print(f"Token expired for org {org_id}, refreshing...")
+        new_tokens = oauth.refresh_access_token(tokens["refresh_token"])
         
-        if not tokens:
-            raise Exception(f"No tokens found for organization {org_id}")
+        # Save new tokens
+        save_tokens(org_id, new_tokens)
         
-        # Check if token is expired (with 5 min buffer)
-        expires_at = tokens.get("expires_at")
-        if expires_at and expires_at < datetime.now() + timedelta(minutes=5):
-            # Token expired, refresh it
-            print(f"Token expired for org {org_id}, refreshing...")
-            new_tokens = google_oauth.refresh_access_token(tokens["refresh_token"])
-            
-            # Save new tokens
-            self.save_tokens(org_id, new_tokens)
-            
-            return new_tokens["access_token"]
-        
-        return tokens["token"]
-
-# Create singleton
-token_manager = TokenManager()
+        return new_tokens["access_token"]
+    
+    return tokens["token"]
 ```
 
-
-# Create singleton
-token_manager = TokenManager()
-```
-
-### Step 6.10: Create Calendar Service
+### Step 6.10: Create Calendar Service (Functional Style)
 
 ```python
 # app/calendar/service.py
+"""
+Calendar data fetching functions.
+Matches existing Hivel functional style from fetch_new_data.py.
+"""
 
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 from datetime import datetime, timedelta
-from typing import List
-import json
+import logging
 
-class CalendarService:
-    """Fetches and processes calendar data"""
+logging.basicConfig(level=logging.INFO)
+
+
+def build_calendar_service(access_token):
+    """
+    Build Google Calendar service with access token.
     
-    def __init__(self, access_token: str):
-        """
-        Initialize with access token.
+    Args:
+        access_token: Valid OAuth access token
         
-        Args:
-            access_token: Valid OAuth access token
-        """
-        credentials = Credentials(token=access_token)
-        self.service = build('calendar', 'v3', credentials=credentials)
+    Returns:
+        Google Calendar API service
+    """
+    credentials = Credentials(token=access_token)
+    return build('calendar', 'v3', credentials=credentials)
+
+
+def fetch_all_calendar_list(service):
+    """
+    Get list of all calendar IDs accessible to this token.
+    For Marketplace app, this returns ONLY calendars for
+    users the admin scoped the app to.
     
-    def get_all_calendars(self) -> List[str]:
-        """
-        Get list of all calendar IDs accessible to this token.
-        For Marketplace app, this returns ONLY calendars for
-        users the admin scoped the app to.
+    Args:
+        service: Google Calendar API service
         
-        Returns:
-            List of calendar email/IDs
-        """
-        calendars = []
-        page_token = None
-        
-        while True:
-            calendar_list = self.service.calendarList().list(
+    Returns:
+        List of calendar email/IDs
+    """
+    calendar_emails = []
+    page_token = None
+    
+    while True:
+        try:
+            calendar_list = service.calendarList().list(
                 pageToken=page_token
             ).execute()
             
-            for calendar in calendar_list.get('items', []):
-                calendars.append(calendar['id'])
+            for calendar_entry in calendar_list.get('items', []):
+                calendar_emails.append(calendar_entry['id'])
             
             page_token = calendar_list.get('nextPageToken')
             if not page_token:
                 break
-        
-        return calendars
+        except Exception as ex:
+            logging.error(f"Failed to fetch calendars: {ex}")
+            break
     
-    def fetch_events(
-        self, 
-        calendar_id: str, 
-        start_date: datetime = None, 
-        end_date: datetime = None
-    ) -> List[dict]:
-        """
-        Fetch events from a specific calendar.
+    return calendar_emails
+
+
+def fetch_calendar_events(service, calendar_email, start_date, end_date, page_token=None):
+    """
+    Fetch events from a specific calendar.
+    
+    Args:
+        service: Google Calendar API service
+        calendar_email: Calendar email/ID
+        start_date: Start of date range (ISO format string)
+        end_date: End of date range (ISO format string)
+        page_token: Optional pagination token
         
-        Args:
-            calendar_id: Calendar email/ID
-            start_date: Start of date range (default: 30 days ago)
-            end_date: End of date range (default: today)
-            
-        Returns:
-            List of event dictionaries
-        """
-        if not start_date:
-            start_date = datetime.utcnow() - timedelta(days=30)
-        if not end_date:
-            end_date = datetime.utcnow()
+    Returns:
+        Dictionary with items (events) and pageToken
+    """
+    events_result = service.events().list(
+        calendarId=calendar_email,
+        timeMin=start_date,
+        timeMax=end_date,
+        orderBy="startTime",
+        singleEvents=True,
+        timeZone="UTC",
+        pageToken=page_token
+    ).execute()
+    
+    events = events_result.get("items", [])
+    next_page_token = events_result.get("nextPageToken")
+    
+    return {"items": events, "pageToken": next_page_token}
+
+
+def parse_event(event, source_email):
+    """
+    Parse raw Google event into our format.
+    
+    Args:
+        event: Raw event from Google API
+        source_email: Calendar email this event came from
         
-        events = []
+    Returns:
+        Parsed event dictionary
+    """
+    # Get attendees
+    attendees = []
+    for attendee in event.get('attendees', []):
+        attendees.append({
+            'email': attendee.get('email'),
+            'response': attendee.get('responseStatus'),
+            'organizer': attendee.get('organizer', False)
+        })
+    
+    # Get start/end times
+    start = event.get('start', {})
+    end = event.get('end', {})
+    
+    return {
+        'google_event_id': event.get('id'),
+        'title': event.get('summary', 'No Title'),
+        'description': event.get('description'),
+        'start_time': start.get('dateTime') or start.get('date'),
+        'end_time': end.get('dateTime') or end.get('date'),
+        'creator_email': event.get('creator', {}).get('email'),
+        'source_email': source_email,
+        'attendees': attendees,
+        'meeting_link': event.get('hangoutLink'),
+        'event_type': event.get('eventType')
+    }
+
+
+def fetch_data(org_id, access_token, start_date, end_date):
+    """
+    Fetch all calendar data for an organization.
+    Main entry point for calendar sync.
+    
+    Args:
+        org_id: Organization ID
+        access_token: Valid OAuth access token
+        start_date: Start date (ISO format string)
+        end_date: End date (ISO format string)
+        
+    Returns:
+        List of all parsed events
+    """
+    print(f"Fetching calendar data for org {org_id}...")
+    
+    # Build service
+    service = build_calendar_service(access_token)
+    
+    # Get all accessible calendars
+    user_emails = fetch_all_calendar_list(service)
+    print(f"Found {len(user_emails)} accessible calendars")
+    
+    if not user_emails:
+        print("No calendars found!")
+        return []
+    
+    all_events = []
+    
+    # Fetch events from each calendar
+    for email in user_emails:
+        logging.info(f"Fetching from: {email}")
+        done = False
         page_token = None
         
-        while True:
-            events_result = self.service.events().list(
-                calendarId=calendar_id,
-                timeMin=start_date.isoformat() + 'Z',
-                timeMax=end_date.isoformat() + 'Z',
-                singleEvents=True,
-                orderBy='startTime',
-                pageToken=page_token
-            ).execute()
-            
-            for event in events_result.get('items', []):
-                events.append(self._parse_event(event, calendar_id))
-            
-            page_token = events_result.get('nextPageToken')
-            if not page_token:
-                break
-        
-        return events
-    
-    def _parse_event(self, event: dict, calendar_id: str) -> dict:
-        """Parse raw Google event into our format"""
-        
-        # Get attendees
-        attendees = []
-        for attendee in event.get('attendees', []):
-            attendees.append({
-                'email': attendee.get('email'),
-                'response': attendee.get('responseStatus'),
-                'organizer': attendee.get('organizer', False)
-            })
-        
-        # Get start/end times
-        start = event.get('start', {})
-        end = event.get('end', {})
-        
-        return {
-            'google_event_id': event.get('id'),
-            'title': event.get('summary', 'No Title'),
-            'description': event.get('description'),
-            'start_time': start.get('dateTime') or start.get('date'),
-            'end_time': end.get('dateTime') or end.get('date'),
-            'creator_email': event.get('creator', {}).get('email'),
-            'source_calendar': calendar_id,
-            'attendees': attendees,
-            'meeting_link': event.get('hangoutLink')
-        }
-    
-    def fetch_all_events(
-        self, 
-        start_date: datetime = None, 
-        end_date: datetime = None
-    ) -> List[dict]:
-        """
-        Fetch events from ALL accessible calendars.
-        
-        For Marketplace app, this automatically only fetches
-        from users the admin permitted.
-        """
-        all_events = []
-        
-        # Get all accessible calendars
-        calendars = self.get_all_calendars()
-        print(f"Found {len(calendars)} accessible calendars")
-        
-        # Fetch events from each
-        for calendar_id in calendars:
+        while not done:
             try:
-                events = self.fetch_events(calendar_id, start_date, end_date)
-                all_events.extend(events)
-                print(f"  - {calendar_id}: {len(events)} events")
+                result = fetch_calendar_events(
+                    service, email, start_date, end_date, page_token
+                )
+                events = result.get("items", [])
+                page_token = result.get("pageToken")
+                
+                for event in events:
+                    parsed = parse_event(event, email)
+                    parsed["org_id"] = org_id
+                    all_events.append(parsed)
+                
+                if page_token is None:
+                    done = True
+                    
             except Exception as e:
-                print(f"  - {calendar_id}: Error - {e}")
-        
-        return all_events
+                logging.error(f"Error fetching from {email}: {e}")
+                done = True
+    
+    print(f"Fetched {len(all_events)} total events")
+    return all_events
 ```
 
-### Step 6.11: Create API Routes
+### Step 6.11: Create API Routes (Functional Style)
 
 ```python
 # app/api/routes.py
+"""
+FastAPI routes for the calendar integration.
+Uses functional modules for auth, tokens, and calendar.
+"""
 
+import os
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import RedirectResponse
-from app.auth.oauth import google_oauth
-from app.auth.token_manager import token_manager
-from app.calendar.service import CalendarService
-from app.config import settings
-from datetime import datetime
+from datetime import datetime, timedelta
+
+from app.auth import oauth
+from app.auth import token_manager
+from app.calendar import service as calendar_service
+
+# Config
+FRONTEND_SUCCESS_URL = os.getenv("FRONTEND_SUCCESS_URL", "http://localhost:3000")
 
 router = APIRouter()
 
+
 # ============================================
-# OAUTH ENDPOINTS (For Marketplace Integration)
+# OAUTH ENDPOINTS
 # ============================================
 
 @router.get("/auth/start")
 def start_oauth(org_id: int):
     """
-    Step 1: Start OAuth flow.
+    Start OAuth flow.
     Frontend calls this, we return the Google authorization URL.
     
     Example: GET /auth/start?org_id=123
     """
-    authorization_url = google_oauth.get_authorization_url(org_id)
+    authorization_url = oauth.get_authorization_url(org_id)
     return {"authorization_url": authorization_url}
 
 
@@ -874,63 +929,58 @@ def oauth_callback(
     state: str = Query(...)  # Contains org_id
 ):
     """
-    Step 2: OAuth callback.
+    OAuth callback.
     Google redirects here after admin approves.
     We exchange code for tokens and store them (with AES encryption).
-    
-    This URL must match what you set in Google Cloud Console!
     """
     try:
-        # Get org_id from state parameter
         org_id = int(state)
         
-        # Exchange authorization code for tokens
-        tokens = google_oauth.exchange_code_for_tokens(code)
+        # Exchange code for tokens
+        tokens = oauth.exchange_code_for_tokens(code)
         
-        # Store tokens in database (with AES encryption)
+        # Store tokens (with AES encryption)
         token_manager.save_tokens(org_id, tokens)
         
         # Redirect to frontend success page
         return RedirectResponse(
-            url=f"{settings.FRONTEND_SUCCESS_URL}?org_id={org_id}&status=success"
+            url=f"{FRONTEND_SUCCESS_URL}?org_id={org_id}&status=success"
         )
         
     except Exception as e:
-        # Redirect to frontend with error
         return RedirectResponse(
-            url=f"{settings.FRONTEND_SUCCESS_URL}?status=error&message={str(e)}"
+            url=f"{FRONTEND_SUCCESS_URL}?status=error&message={str(e)}"
         )
 
 
 # ============================================
-# CALENDAR DATA ENDPOINTS
+# CALENDAR ENDPOINTS
 # ============================================
 
 @router.get("/calendar/sync")
 def sync_calendar(
     org_id: int,
-    start_date: str = None,  # Format: 2024-01-01
+    start_date: str = None,
     end_date: str = None
 ):
     """
     Fetch calendar events for an organization.
-    This only fetches from users the Marketplace admin permitted.
+    Only fetches from users the Marketplace admin permitted.
     
-    Example: GET /calendar/sync?org_id=123&start_date=2024-01-01
+    Example: GET /calendar/sync?org_id=123&start_date=2024-01-01T00:00:00Z
     """
     try:
-        # Get valid access token (auto-refreshes if needed)
+        # Get valid access token (auto-refreshes if expired)
         access_token = token_manager.get_valid_token(org_id)
         
-        # Create calendar service
-        calendar_service = CalendarService(access_token)
-        
-        # Parse dates
-        start = datetime.fromisoformat(start_date) if start_date else None
-        end = datetime.fromisoformat(end_date) if end_date else None
+        # Default date range
+        if not start_date:
+            start_date = (datetime.utcnow() - timedelta(days=30)).strftime("%Y-%m-%dT00:00:00Z")
+        if not end_date:
+            end_date = datetime.utcnow().strftime("%Y-%m-%dT23:59:59Z")
         
         # Fetch all events
-        events = calendar_service.fetch_all_events(start, end)
+        events = calendar_service.fetch_data(org_id, access_token, start_date, end_date)
         
         return {
             "status": "success",
@@ -946,22 +996,20 @@ def sync_calendar(
 @router.get("/calendar/users")
 def get_accessible_users(org_id: int):
     """
-    List all users whose calendars we can access.
-    For Marketplace app, this shows ONLY the users
-    the admin scoped the app to.
+    List all calendars we can access for this org.
+    For Marketplace app, shows ONLY users the admin scoped.
     
     Example: GET /calendar/users?org_id=123
     """
     try:
         access_token = token_manager.get_valid_token(org_id)
-        calendar_service = CalendarService(access_token)
-        
-        calendars = calendar_service.get_all_calendars()
+        service = calendar_service.build_calendar_service(access_token)
+        calendars = calendar_service.fetch_all_calendar_list(service)
         
         return {
             "status": "success",
             "org_id": org_id,
-            "accessible_users": calendars,
+            "accessible_calendars": calendars,
             "count": len(calendars)
         }
         

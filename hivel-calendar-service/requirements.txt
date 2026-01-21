@@ -1,0 +1,19 @@
+# requirements.txt
+
+# Web framework
+fastapi==0.109.0
+uvicorn==0.27.0
+
+# Google APIs
+google-auth==2.27.0
+google-auth-oauthlib==1.2.0
+google-api-python-client==2.116.0
+
+# Database - Using psycopg3 (works with Python 3.13)
+psycopg[binary]==3.1.18
+
+# Environment variables
+python-dotenv==1.0.0
+
+# HTTP client
+httpx==0.26.0
