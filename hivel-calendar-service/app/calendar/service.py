@@ -92,38 +92,107 @@ def fetch_calendar_events(service, calendar_email, start_date, end_date, page_to
 def parse_event(event, source_email):
     """
     Parse raw Google event into our format.
+    Captures ALL fields from the Google Calendar API.
     
     Args:
         event: Raw event from Google API
         source_email: Calendar email this event came from
         
     Returns:
-        Parsed event dictionary
+        Parsed event dictionary with all fields
     """
-    # Get attendees
+    # Get attendees with full details
     attendees = []
     for attendee in event.get('attendees', []):
         attendees.append({
             'email': attendee.get('email'),
-            'response': attendee.get('responseStatus'),
-            'organizer': attendee.get('organizer', False)
+            'displayName': attendee.get('displayName'),
+            'responseStatus': attendee.get('responseStatus'),
+            'organizer': attendee.get('organizer', False),
+            'self': attendee.get('self', False),
+            'optional': attendee.get('optional', False),
+            'resource': attendee.get('resource', False),
+            'comment': attendee.get('comment')
         })
     
-    # Get start/end times
+    # Get start/end with timezone
     start = event.get('start', {})
     end = event.get('end', {})
     
+    # Get creator and organizer
+    creator = event.get('creator', {})
+    organizer = event.get('organizer', {})
+    
+    # Get conference data
+    conference_data = event.get('conferenceData', {})
+    
     return {
+        # Core identifiers
         'google_event_id': event.get('id'),
+        'kind': event.get('kind'),
+        'etag': event.get('etag'),
+        'status': event.get('status'),
+        'iCalUID': event.get('iCalUID'),
+        'sequence': event.get('sequence'),
+        
+        # Content
         'title': event.get('summary', 'No Title'),
         'description': event.get('description'),
+        'location': event.get('location'),
+        'colorId': event.get('colorId'),
+        
+        # Links
+        'htmlLink': event.get('htmlLink'),
+        'hangoutLink': event.get('hangoutLink'),
+        
+        # Timestamps
+        'created': event.get('created'),
+        'updated': event.get('updated'),
+        
+        # Start/End with timezone
         'start_time': start.get('dateTime') or start.get('date'),
+        'start_timezone': start.get('timeZone'),
         'end_time': end.get('dateTime') or end.get('date'),
-        'creator_email': event.get('creator', {}).get('email'),
-        'source_email': source_email,
+        'end_timezone': end.get('timeZone'),
+        
+        # People
+        'creator_email': creator.get('email'),
+        'creator_displayName': creator.get('displayName'),
+        'creator_self': creator.get('self', False),
+        'organizer_email': organizer.get('email'),
+        'organizer_displayName': organizer.get('displayName'),
+        'organizer_self': organizer.get('self', False),
+        
+        # Attendees
         'attendees': attendees,
-        'meeting_link': event.get('hangoutLink'),
-        'event_type': event.get('eventType')
+        
+        # Recurrence
+        'recurringEventId': event.get('recurringEventId'),
+        'recurrence': event.get('recurrence'),
+        'originalStartTime': event.get('originalStartTime'),
+        
+        # Event properties
+        'event_type': event.get('eventType'),
+        'visibility': event.get('visibility'),
+        'transparency': event.get('transparency'),
+        'privateCopy': event.get('privateCopy', False),
+        'locked': event.get('locked', False),
+        'guestsCanModify': event.get('guestsCanModify', False),
+        'guestsCanInviteOthers': event.get('guestsCanInviteOthers', True),
+        'guestsCanSeeOtherGuests': event.get('guestsCanSeeOtherGuests', True),
+        
+        # Conference/Meeting
+        'conferenceData': conference_data,
+        'conferenceId': conference_data.get('conferenceId') if conference_data else None,
+        
+        # Reminders
+        'reminders': event.get('reminders'),
+        
+        # Attachments
+        'attachments': event.get('attachments'),
+        
+        # Source calendar
+        'source_email': source_email
     }
 
 
@@ -154,6 +223,11 @@ def fetch_data(org_id, access_token, start_date, end_date):
         print("No calendars found!")
         return []
     
+    # NOTE:
+    # We intentionally return the **raw Google event objects** here,
+    # instead of our own parsed/normalized structure.
+    # This lets downstream consumers (and the DB layer) work directly
+    # with the native Google Calendar fields.
     all_events = []
     
     # Fetch events from each calendar
@@ -171,9 +245,12 @@ def fetch_data(org_id, access_token, start_date, end_date):
                 page_token = result.get("pageToken")
                 
                 for event in events:
-                    parsed = parse_event(event, email)
-                    parsed["org_id"] = org_id
-                    all_events.append(parsed)
+                    # Use the raw Google event object and just annotate it
+                    # with minimal extra context.
+                    raw_event = dict(event)
+                    raw_event["source_email"] = email
+                    raw_event["org_id"] = org_id
+                    all_events.append(raw_event)
                 
                 if page_token is None:
                     done = True

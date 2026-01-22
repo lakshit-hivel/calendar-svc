@@ -48,13 +48,17 @@ def oauth_callback(
     We exchange code for tokens and store them (with AES encryption).
     """
     try:
+        print(f"🔄 Callback received! state={state}, code={code[:20]}...")
         org_id = int(state)
         
         # Exchange code for tokens
+        print(f"📥 Exchanging code for tokens...")
         tokens = oauth.exchange_code_for_tokens(code)
+        print(f"✅ Got tokens! access_token={tokens.get('access_token', 'NONE')[:30]}...")
         
         # Store tokens (with AES encryption)
         token_manager.save_tokens(org_id, tokens)
+        print(f"💾 Tokens saved for org {org_id}")
         
         # Redirect to frontend success page
         return RedirectResponse(
@@ -62,6 +66,9 @@ def oauth_callback(
         )
         
     except Exception as e:
+        print(f"❌ ERROR in callback: {e}")
+        import traceback
+        traceback.print_exc()
         return RedirectResponse(
             url=f"{FRONTEND_SUCCESS_URL}?status=error&message={str(e)}"
         )
@@ -75,13 +82,14 @@ def oauth_callback(
 def sync_calendar(
     org_id: int,
     start_date: str = None,
-    end_date: str = None
+    end_date: str = None,
+    save_to_db: bool = False  # Set True to save to database
 ):
     """
     Fetch calendar events for an organization.
     Only fetches from users the Marketplace admin permitted.
     
-    Example: GET /calendar/sync?org_id=123&start_date=2024-01-01T00:00:00Z
+    Example: GET /calendar/sync?org_id=123&start_date=2024-01-01T00:00:00Z&save_to_db=true
     """
     try:
         # Get valid access token (auto-refreshes if expired)
@@ -96,15 +104,23 @@ def sync_calendar(
         # Fetch all events
         events = calendar_service.fetch_data(org_id, access_token, start_date, end_date)
         
+        # Optionally save to database
+        saved_count = 0
+        if save_to_db:
+            from app.database.events import save_events
+            saved_count = save_events(events, org_id)
+        
         return {
             "status": "success",
             "org_id": org_id,
             "events_count": len(events),
+            "saved_to_db": saved_count if save_to_db else "skipped",
             "events": events
         }
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @router.get("/calendar/users")
