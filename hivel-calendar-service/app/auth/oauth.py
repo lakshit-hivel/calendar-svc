@@ -8,8 +8,11 @@ from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from dotenv import load_dotenv
+from app.core.logger import get_logger
 
 load_dotenv()
+
+logger = get_logger(__name__)
 
 # Config (loaded from environment)
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
@@ -45,6 +48,8 @@ def get_authorization_url(org_id):
     Returns:
         Authorization URL string
     """
+    logger.info(f"[OAUTH] Generating authorization URL for org {org_id}")
+    
     flow = Flow.from_client_config(
         get_client_config(),
         scopes=SCOPES,
@@ -58,7 +63,7 @@ def get_authorization_url(org_id):
         state=str(org_id)  # Pass org_id through OAuth flow
     )
     
-    print(f"Generated auth URL for org {org_id}")
+    logger.info(f"[OAUTH] ✅ Authorization URL generated for org {org_id}")
     return authorization_url
 
 
@@ -73,22 +78,28 @@ def exchange_code_for_tokens(authorization_code):
     Returns:
         Dictionary with access_token, refresh_token, expiry
     """
-    flow = Flow.from_client_config(
-        get_client_config(),
-        scopes=SCOPES,
-        redirect_uri=REDIRECT_URI
-    )
+    logger.info(f"[OAUTH] Exchanging authorization code for tokens")
     
-    flow.fetch_token(code=authorization_code)
-    credentials = flow.credentials
-    
-    print("Successfully exchanged code for tokens")
-    
-    return {
-        "access_token": credentials.token,
-        "refresh_token": credentials.refresh_token,
-        "expiry": credentials.expiry.isoformat() if credentials.expiry else None
-    }
+    try:
+        flow = Flow.from_client_config(
+            get_client_config(),
+            scopes=SCOPES,
+            redirect_uri=REDIRECT_URI
+        )
+        
+        flow.fetch_token(code=authorization_code)
+        credentials = flow.credentials
+        
+        logger.info(f"[OAUTH] ✅ Successfully exchanged code for tokens")
+        
+        return {
+            "access_token": credentials.token,
+            "refresh_token": credentials.refresh_token,
+            "expiry": credentials.expiry.isoformat() if credentials.expiry else None
+        }
+    except Exception as e:
+        logger.error(f"[OAUTH] ❌ Failed to exchange code for tokens: {e}")
+        raise
 
 
 def refresh_access_token(refresh_token):
@@ -101,20 +112,60 @@ def refresh_access_token(refresh_token):
     Returns:
         Dictionary with new access_token, refresh_token, expiry
     """
-    credentials = Credentials(
-        token=None,
-        refresh_token=refresh_token,
-        token_uri="https://oauth2.googleapis.com/token",
-        client_id=GOOGLE_CLIENT_ID,
-        client_secret=GOOGLE_CLIENT_SECRET
-    )
+    logger.info(f"[OAUTH] Refreshing access token using refresh token")
     
-    credentials.refresh(Request())
+    try:
+        credentials = Credentials(
+            token=None,
+            refresh_token=refresh_token,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=GOOGLE_CLIENT_ID,
+            client_secret=GOOGLE_CLIENT_SECRET
+        )
+        
+        credentials.refresh(Request())
+        
+        logger.info(f"[OAUTH] ✅ Successfully refreshed access token")
+        
+        return {
+            "access_token": credentials.token,
+            "refresh_token": credentials.refresh_token or refresh_token,
+            "expiry": credentials.expiry.isoformat() if credentials.expiry else None
+        }
+    except Exception as e:
+        logger.error(f"[OAUTH] ❌ Failed to refresh access token: {e}")
+        raise
+
+
+def get_user_info(access_token):
+    """
+    Fetch user info (email) from Google using access token.
     
-    print("Successfully refreshed access token")
+    Args:
+        access_token: Valid OAuth access token
+        
+    Returns:
+        Dictionary with email and other user info
+    """
+    import requests
     
-    return {
-        "access_token": credentials.token,
-        "refresh_token": credentials.refresh_token or refresh_token,
-        "expiry": credentials.expiry.isoformat() if credentials.expiry else None
-    }
+    logger.info("[OAUTH] Fetching user info from Google")
+    
+    try:
+        response = requests.get(
+            "https://www.googleapis.com/oauth2/v2/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"}
+        )
+        response.raise_for_status()
+        user_info = response.json()
+        
+        logger.info(f"[OAUTH] ✅ Got user info, email={user_info.get('email')}")
+        
+        return {
+            "email": user_info.get("email"),
+            "name": user_info.get("name"),
+            "picture": user_info.get("picture")
+        }
+    except Exception as e:
+        logger.error(f"[OAUTH] ❌ Failed to fetch user info: {e}")
+        return {"email": None, "name": None, "picture": None}

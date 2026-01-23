@@ -12,8 +12,12 @@ from dotenv import load_dotenv
 from app.auth import oauth
 from app.auth import token_manager
 from app.calendar import service as calendar_service
+from app.core.logger import get_logger
 
 load_dotenv()
+
+# Get logger from centralized module
+logger = get_logger(__name__)
 
 # Config
 FRONTEND_SUCCESS_URL = os.getenv("FRONTEND_SUCCESS_URL", "http://localhost:3000")
@@ -48,17 +52,23 @@ def oauth_callback(
     We exchange code for tokens and store them (with AES encryption).
     """
     try:
-        print(f"🔄 Callback received! state={state}, code={code[:20]}...")
+        logger.info(f"[CALLBACK] Received callback, state={state}")
         org_id = int(state)
         
         # Exchange code for tokens
-        print(f"📥 Exchanging code for tokens...")
+        logger.info(f"[CALLBACK] Exchanging code for tokens")
         tokens = oauth.exchange_code_for_tokens(code)
-        print(f"✅ Got tokens! access_token={tokens.get('access_token', 'NONE')[:30]}...")
+        logger.info(f"[CALLBACK] ✅ Got tokens")
         
-        # Store tokens (with AES encryption)
-        token_manager.save_tokens(org_id, tokens)
-        print(f"💾 Tokens saved for org {org_id}")
+        # Fetch user email from Google
+        logger.info(f"[CALLBACK] Fetching user email")
+        user_info = oauth.get_user_info(tokens.get('access_token'))
+        user_email = user_info.get('email')
+        logger.info(f"[CALLBACK] ✅ User email: {user_email}")
+        
+        # Store tokens with email (with AES encryption)
+        token_manager.save_tokens(org_id, tokens, email=user_email)
+        logger.info(f"[CALLBACK] ✅ Tokens saved for org {org_id}")
         
         # Redirect to frontend success page
         return RedirectResponse(
@@ -66,9 +76,9 @@ def oauth_callback(
         )
         
     except Exception as e:
-        print(f"❌ ERROR in callback: {e}")
+        logger.error(f"[CALLBACK] ❌ Error: {e}")
         import traceback
-        traceback.print_exc()
+        logger.error(f"[CALLBACK] Traceback:\n{traceback.format_exc()}")
         return RedirectResponse(
             url=f"{FRONTEND_SUCCESS_URL}?status=error&message={str(e)}"
         )
@@ -108,7 +118,9 @@ def sync_calendar(
         saved_count = 0
         if save_to_db:
             from app.database.events import save_events
-            saved_count = save_events(events, org_id)
+            # TESTING: Limit to first 5 events
+            test_events = events[:5]
+            saved_count = save_events(test_events, org_id)
         
         return {
             "status": "success",
@@ -144,6 +156,83 @@ def get_accessible_users(org_id: int):
         }
         
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================
+# AUTH-SVC COMPATIBLE SYNC ENDPOINT
+# ============================================
+
+from pydantic import BaseModel
+from typing import Optional
+
+class SyncQueryParams(BaseModel):
+    orgId: int
+    userIntegrationId: Optional[int] = None
+    startDate: str
+    endDate: str
+    initialSync: bool = True
+
+class SyncRequest(BaseModel):
+    queryStringParameters: SyncQueryParams
+
+
+@router.post("/initial-sync")
+def initial_sync(request: SyncRequest):
+    """
+    Initial sync endpoint called by auth-svc.
+    Matches the payload format expected by GoogleCalendarOAuthService.java
+    
+    Payload format:
+    {
+        "queryStringParameters": {
+            "orgId": 123,
+            "userIntegrationId": 456,
+            "startDate": "2026-11-24T00:00:01Z",
+            "endDate": "2026-01-24T00:00:01Z",
+            "initialSync": true
+        }
+    }
+    """
+    params = request.queryStringParameters
+    org_id = params.orgId
+    start_date = params.startDate
+    end_date = params.endDate
+    
+    logger.info(f"[SYNC START] org_id={org_id}, start_date={start_date}, end_date={end_date}, initial_sync={params.initialSync}")
+    
+    try:
+        # Step 1: Get access token
+        logger.info(f"[STEP 1] Getting access token for org {org_id}")
+        access_token = token_manager.get_valid_token(org_id)
+        logger.info(f"[STEP 1] ✅ Access token retrieved successfully")
+        
+        # Step 2: Fetch events from Google Calendar
+        logger.info(f"[STEP 2] Fetching events from Google Calendar API")
+        events = calendar_service.fetch_data(org_id, access_token, start_date, end_date)
+        logger.info(f"[STEP 2] ✅ Fetched {len(events)} events from Google Calendar")
+        
+        # Step 3: Save to database
+        logger.info(f"[STEP 3] Saving events to database")
+        from app.database.events import save_events
+        saved_count = save_events(events, org_id)
+        logger.info(f"[STEP 3] ✅ Saved {saved_count}/{len(events)} events to database")
+        
+        # Success
+        logger.info(f"[SYNC COMPLETE] org_id={org_id}, events_fetched={len(events)}, events_saved={saved_count}")
+        
+        return {
+            "status": "success",
+            "org_id": org_id,
+            "events_fetched": len(events),
+            "events_saved": saved_count,
+            "initial_sync": params.initialSync
+        }
+        
+    except Exception as e:
+        logger.error(f"[SYNC ERROR] org_id={org_id}, error={str(e)}")
+        import traceback
+        logger.error(f"[SYNC ERROR] Traceback:\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

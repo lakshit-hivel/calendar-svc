@@ -6,9 +6,9 @@ Functional style matching existing Hivel fetch_new_data.py.
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 from datetime import datetime, timedelta
-import logging
+from app.core.logger import get_logger
 
-logging.basicConfig(level=logging.INFO)
+logger = get_logger(__name__)
 
 
 def build_calendar_service(access_token):
@@ -53,7 +53,7 @@ def fetch_all_calendar_list(service):
             if not page_token:
                 break
         except Exception as ex:
-            logging.error(f"Failed to fetch calendars: {ex}")
+            logger.error(f"Failed to fetch calendars: {ex}")
             break
     
     return calendar_emails
@@ -210,17 +210,20 @@ def fetch_data(org_id, access_token, start_date, end_date):
     Returns:
         List of all parsed events
     """
-    print(f"Fetching calendar data for org {org_id}...")
+    logger.info(f"[CALENDAR] Starting calendar fetch for org {org_id}")
+    logger.info(f"[CALENDAR] Date range: {start_date} to {end_date}")
     
     # Build service
+    logger.info(f"[CALENDAR] Building Google Calendar service")
     service = build_calendar_service(access_token)
     
     # Get all accessible calendars
+    logger.info(f"[CALENDAR] Fetching accessible calendar list")
     user_emails = fetch_all_calendar_list(service)
-    print(f"Found {len(user_emails)} accessible calendars")
+    logger.info(f"[CALENDAR] Found {len(user_emails)} accessible calendars")
     
     if not user_emails:
-        print("No calendars found!")
+        logger.warning(f"[CALENDAR] ⚠️ No calendars found for org {org_id}")
         return []
     
     # NOTE:
@@ -232,9 +235,10 @@ def fetch_data(org_id, access_token, start_date, end_date):
     
     # Fetch events from each calendar
     for email in user_emails:
-        logging.info(f"Fetching from: {email}")
+        logger.info(f"[CALENDAR] Fetching events from: {email}")
         done = False
         page_token = None
+        calendar_event_count = 0
         
         while not done:
             try:
@@ -251,13 +255,16 @@ def fetch_data(org_id, access_token, start_date, end_date):
                     raw_event["source_email"] = email
                     raw_event["org_id"] = org_id
                     all_events.append(raw_event)
+                    calendar_event_count += 1
                 
                 if page_token is None:
                     done = True
                     
             except Exception as e:
-                logging.error(f"Error fetching from {email}: {e}")
+                logger.error(f"[CALENDAR] ❌ Error fetching from {email}: {e}")
                 done = True
+        
+        logger.info(f"[CALENDAR] ✅ Fetched {calendar_event_count} events from {email}")
     
-    print(f"Fetched {len(all_events)} total events")
+    logger.info(f"[CALENDAR] ✅ Total events fetched: {len(all_events)}")
     return all_events

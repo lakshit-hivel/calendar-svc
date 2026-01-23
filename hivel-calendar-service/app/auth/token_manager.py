@@ -1,142 +1,104 @@
 """
-Token management functions for Google Calendar integration.
-Uses existing insightly.user_integration_details table with AES encryption.
-Functional style matching existing Hivel code.
+Token manager for Google Calendar integration.
+Uses database functions from events.py for storage.
 """
 
-import psycopg
 from datetime import datetime, timedelta
-from app.database.connection import get_connection
 from app.auth import oauth
+from app.database.events import (
+    get_integration_tokens,
+    save_integration_tokens
+)
+from app.core.logger import get_logger
 
-PROVIDER = 'GOOGLE_CALENDAR'
+logger = get_logger(__name__)
 
 
 def get_tokens(org_id):
+    """Get tokens from database."""
+    logger.debug(f"[TOKEN] Retrieving tokens for org {org_id}")
+    tokens = get_integration_tokens(org_id)
+    if tokens:
+        logger.debug(f"[TOKEN] ✅ Tokens found for org {org_id}")
+    else:
+        logger.warning(f"[TOKEN] ⚠️ No tokens found for org {org_id}")
+    return tokens
+
+
+def save_tokens(org_id, tokens, email=None):
     """
-    Get decrypted tokens from database.
+    Save tokens to database.
     
     Args:
         org_id: Organization ID
-        
-    Returns:
-        Dictionary with token, refresh_token, expires_at or None
+        tokens: Dict with access_token, refresh_token, expires_in
+        email: User's email (optional)
     """
-    conn = get_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute("""
-                SELECT 
-                    aes_decrypt(uid.accesstoken) as token, 
-                    aes_decrypt(uid.refreshtoken) as refresh_token, 
-                    COALESCE(
-                        uid.access_token_generation_date + 
-                        CAST(uid.expiresin || ' minutes' AS INTERVAL), 
-                        NOW()
-                    ) as expires_at 
-                FROM insightly.user_integration_details uid 
-                WHERE uid.organizationid = %s 
-                AND provider = %s
-            """, (org_id, PROVIDER))
-            
-            result = cursor.fetchone()
-            if result:
-                return {
-                    "token": result[0],
-                    "refresh_token": result[1],
-                    "expires_at": result[2]
-                }
-            return None
-    finally:
-        conn.close()
-
-
-def save_tokens(org_id, tokens):
-    """
-    Save tokens with AES encryption.
+    logger.info(f"[TOKEN] Saving tokens for org {org_id}, email={email}")
+    access_token = tokens.get('access_token')
+    refresh_token = tokens.get('refresh_token')
+    expires_in = tokens.get('expires_in', 3600)  # Default 1 hour (in seconds)
     
-    Args:
-        org_id: Organization ID
-        tokens: Dictionary with access_token, refresh_token
-        
-    Returns:
-        True if successful
-    """
-    conn = get_connection()
-    try:
-        with conn.cursor() as cursor:
-            # Check if record exists
-            cursor.execute("""
-                SELECT id FROM insightly.user_integration_details 
-                WHERE organizationid = %s AND provider = %s
-            """, (org_id, PROVIDER))
-            
-            existing = cursor.fetchone()
-            
-            if existing:
-                # Update existing record
-                cursor.execute("""
-                    UPDATE insightly.user_integration_details
-                    SET accesstoken = aes_encrypt(%s), 
-                        refreshtoken = aes_encrypt(%s),
-                        access_token_generation_date = NOW(),
-                        expiresin = 60
-                    WHERE organizationid = %s AND provider = %s
-                """, (
-                    tokens.get("access_token"),
-                    tokens.get("refresh_token"),
-                    org_id,
-                    PROVIDER
-                ))
-            else:
-                # Insert new record
-                cursor.execute("""
-                    INSERT INTO insightly.user_integration_details 
-                    (organizationid, provider, accesstoken, refreshtoken, 
-                     access_token_generation_date, expiresin)
-                    VALUES (%s, %s, aes_encrypt(%s), aes_encrypt(%s), NOW(), 60)
-                """, (
-                    org_id,
-                    PROVIDER,
-                    tokens.get("access_token"),
-                    tokens.get("refresh_token")
-                ))
-            
-            conn.commit()
-            print(f"Saved tokens for org {org_id}")
-            return True
-    except Exception as e:
-        conn.rollback()
-        raise e
-    finally:
-        conn.close()
+    result = save_integration_tokens(
+        org_id=org_id,
+        access_token=access_token,
+        refresh_token=refresh_token,
+        expires_in=expires_in,
+        email=email
+    )
+    logger.info(f"[TOKEN] ✅ Tokens saved successfully for org {org_id}")
+    return result
 
 
 def get_valid_token(org_id):
     """
-    Get a valid access token, refreshing if needed.
+    Get a valid access token, refreshing if expired.
     
-    Args:
-        org_id: Organization ID
-        
     Returns:
         Valid access token string
+    
+    Raises:
+        Exception if no tokens found or refresh fails
     """
+    logger.info(f"[TOKEN] Getting valid token for org {org_id}")
+    
     tokens = get_tokens(org_id)
     
     if not tokens:
-        raise Exception(f"No tokens found for organization {org_id}")
+        logger.error(f"[TOKEN] ❌ No tokens found for org {org_id}")
+        raise Exception(f"No tokens found for organization {org_id}. Please authenticate first.")
     
-    # Check if token is expired (with 5 min buffer)
-    expires_at = tokens.get("expires_at")
-    if expires_at and expires_at < datetime.now() + timedelta(minutes=5):
-        # Token expired, refresh it
-        print(f"Token expired for org {org_id}, refreshing...")
-        new_tokens = oauth.refresh_access_token(tokens["refresh_token"])
-        
-        # Save new tokens
-        save_tokens(org_id, new_tokens)
-        
-        return new_tokens["access_token"]
+    # Calculate expiry from expires_in + access_token_generation_date
+    expires_in = tokens.get('expires_in', 3600)
+    generation_date = tokens.get('access_token_generation_date')
     
-    return tokens["token"]
+    is_expired = False
+    if generation_date:
+        expires_at = generation_date + timedelta(seconds=expires_in)
+        # Check if expired or about to expire (within 5 minutes)
+        is_expired = expires_at < datetime.now() + timedelta(minutes=5)
+        logger.debug(f"[TOKEN] Token expires at {expires_at}, is_expired={is_expired}")
+    
+    if is_expired:
+        logger.info(f"[TOKEN] Token expired for org {org_id}, refreshing...")
+        
+        refresh_token = tokens.get('refresh_token')
+        if not refresh_token:
+            logger.error(f"[TOKEN] ❌ No refresh token found for org {org_id}")
+            raise Exception(f"No refresh token found for org {org_id}. Re-authentication required.")
+        
+        # Get new tokens from Google
+        logger.info(f"[TOKEN] Calling Google OAuth to refresh token")
+        new_tokens = oauth.refresh_access_token(refresh_token)
+        logger.info(f"[TOKEN] ✅ Token refreshed successfully")
+        
+        # Save the new tokens (refresh_token might not be returned, keep old one)
+        if not new_tokens.get('refresh_token'):
+            new_tokens['refresh_token'] = refresh_token
+        
+        save_tokens(org_id, new_tokens, email=tokens.get('email'))
+        
+        return new_tokens['access_token']
+    
+    logger.info(f"[TOKEN] ✅ Token is valid for org {org_id}")
+    return tokens['token']

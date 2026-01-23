@@ -2,7 +2,7 @@
 Calendar event storage functions.
 Saves events to:
   - insightly_meeting.gcalendar (raw event data)
-  - insightly.authors (user lookup table)
+  - insightly.author (user lookup table)
   - insightly_meeting.gcal_event (normalized event data with author IDs)
 Uses SELECT → INSERT/UPDATE pattern.
 """
@@ -10,9 +10,9 @@ Uses SELECT → INSERT/UPDATE pattern.
 import json
 from datetime import datetime
 from app.database.connection import get_connection
-import logging
+from app.core.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 SCM_PROVIDER = 'googlecalendar'
 
@@ -39,7 +39,7 @@ def get_user(email, org_id, conn):
         
         # Check if author exists by decrypting stored email and comparing
         check_query = """
-            SELECT id FROM insightly.authors 
+            SELECT id FROM insightly.author 
             WHERE aes_decrypt(email) = %(email)s 
               AND scmprovider = %(scmprovider)s 
               AND organizationid = %(organizationid)s
@@ -95,7 +95,7 @@ def insert_user(email, org_id, conn):
         
         # Insert query - encrypt email before storing
         insert_query = """
-            INSERT INTO insightly.authors (
+            INSERT INTO insightly.author (
                 email, scmprovider, organizationid,
                 type, active, archived, createddate, modifieddate
             ) VALUES (
@@ -402,8 +402,8 @@ def save_events(events, org_id):
                     'created_by': creator_id,  # Using author ID
                     'start_date_time': start_time,
                     'end_date_time': end_time,
-                    'attendees': ','.join(attendee_ids),  # Comma-separated author IDs
-                    'accepted_by': ','.join(accepted_ids),  # Comma-separated author IDs
+                    'attendees': '{' + ','.join(attendee_ids) + '}',  # PostgreSQL array format
+                    'accepted_by': '{' + ','.join(accepted_ids) + '}',  # PostgreSQL array format
                     'meeting_type': event.get('eventType', 'default'),
                     'organizationid': org_id,
                     'attendees_data': attendees_json  # Keep raw JSON for reference
@@ -425,3 +425,151 @@ def save_events(events, org_id):
         conn.close()
 
 
+INTEGRATION_TYPE = 'GOOGLE_CALENDAR'  # Matches auth-svc provider constant
+
+
+def save_integration_tokens(org_id, access_token, refresh_token, expires_in, email=None):
+    """
+    Save tokens to user_integration_details table.
+    Uses INSERT on first auth, UPDATE on subsequent.
+    
+    Args:
+        org_id: Organization ID
+        access_token: OAuth access token
+        refresh_token: OAuth refresh token
+        expires_in: Token expiry time (seconds or datetime)
+        email: User's email
+    """
+    conn = None
+    cursor = None
+    
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        # Check if record exists
+        check_query = """
+            SELECT id FROM insightly.user_integration_details
+            WHERE organizationid = %(org_id)s
+              AND provider = %(provider)s
+            LIMIT 1
+        """
+        
+        cursor.execute(check_query, {
+            'org_id': org_id,
+            'provider': INTEGRATION_TYPE
+        })
+        
+        existing = cursor.fetchone()
+        
+        if existing:
+            # Update existing record
+            update_query = """
+                UPDATE insightly.user_integration_details
+                SET accesstoken = aes_encrypt(%(access_token)s),
+                    refreshtoken = aes_encrypt(%(refresh_token)s),
+                    expiresin = %(expires_in)s,
+                    access_token_generation_date = NOW(),
+                    modifieddate = NOW()
+                WHERE organizationid = %(org_id)s
+                  AND provider = %(provider)s
+            """
+            cursor.execute(update_query, {
+                'access_token': access_token,
+                'refresh_token': refresh_token,
+                'expires_in': expires_in,
+                'org_id': org_id,
+                'provider': INTEGRATION_TYPE
+            })
+            print(f"✅ Updated tokens in DB for org {org_id}")
+        else:
+            # Insert new record
+            insert_query = """
+                INSERT INTO insightly.user_integration_details (
+                    organizationid, provider, accesstoken, refreshtoken,
+                    expiresin, email, access_token_generation_date,
+                    createddate, modifieddate
+                ) VALUES (
+                    %(org_id)s, %(provider)s,
+                    aes_encrypt(%(access_token)s), aes_encrypt(%(refresh_token)s),
+                    %(expires_in)s, %(email)s, NOW(), NOW(), NOW()
+                )
+            """
+            cursor.execute(insert_query, {
+                'org_id': org_id,
+                'provider': INTEGRATION_TYPE,
+                'access_token': access_token,
+                'refresh_token': refresh_token,
+                'expires_in': expires_in,
+                'email': email
+            })
+            print(f"✅ Saved tokens in DB for org {org_id}")
+        
+        conn.commit()
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error saving tokens for org {org_id}: {e}")
+        if conn:
+            conn.rollback()
+        raise
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+
+def get_integration_tokens(org_id):
+    """
+    Get tokens from user_integration_details table.
+    
+    Returns:
+        dict with token, refresh_token, expires_in, access_token_generation_date, email
+        or None if not found
+    """
+    conn = None
+    cursor = None
+    
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        query = """
+            SELECT 
+                aes_decrypt(accesstoken) as token,
+                aes_decrypt(refreshtoken) as refresh_token,
+                expiresin,
+                access_token_generation_date,
+                email
+            FROM insightly.user_integration_details
+            WHERE organizationid = %(org_id)s
+              AND provider = %(provider)s
+            LIMIT 1
+        """
+        
+        cursor.execute(query, {
+            'org_id': org_id,
+            'provider': INTEGRATION_TYPE
+        })
+        
+        row = cursor.fetchone()
+        
+        if row:
+            return {
+                'token': row[0],
+                'refresh_token': row[1],
+                'expires_in': row[2],
+                'access_token_generation_date': row[3],
+                'email': row[4]
+            }
+        return None
+        
+    except Exception as e:
+        logger.error(f"Error getting tokens for org {org_id}: {e}")
+        raise
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()

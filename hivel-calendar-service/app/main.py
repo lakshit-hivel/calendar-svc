@@ -5,6 +5,13 @@ Google Calendar integration via Marketplace app.
 
 from fastapi import FastAPI
 from app.api.routes import router
+from app.core.logger import setup_logging, get_logger
+
+# Initialize logging FIRST
+setup_logging()
+
+# Get logger for this module
+logger = get_logger(__name__)
 
 # Create FastAPI app
 app = FastAPI(
@@ -20,14 +27,14 @@ app.include_router(router)
 @app.on_event("startup")
 async def startup_event():
     """Run on application startup."""
-    print("🚀 Hivel Calendar Service starting...")
-    print("📅 Google Calendar Marketplace integration ready")
+    logger.info("🚀 Hivel Calendar Service starting...")
+    logger.info("📅 Google Calendar Marketplace integration ready")
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Run on application shutdown."""
-    print("👋 Hivel Calendar Service shutting down...")
+    logger.info("👋 Hivel Calendar Service shutting down...")
 
 
 # For running with: python -m app.main
